@@ -8,6 +8,7 @@ Created on Wed May 15 16:44:09 2019
 import pandas as pd
 import seaborn as sns
 import numpy as np
+import os
 import pickle,math,sys,re
 from scipy.optimize import curve_fit
 import matplotlib
@@ -24,15 +25,22 @@ from scipy.stats import gaussian_kde
 from itertools import combinations
 
 idx = pd.IndexSlice
+
+#Different distance metrics can go into this dictionary (anything from scipy.spatial.dist should work)
 distanceMetricDictionary = {'euclidean':dist.euclidean,'manhattan':dist.cityblock,'chebyshev':dist.chebyshev}
 
+#Quality deconvolution measurement method. "Eithersorted" boolean allows for separate dataframes to be saved for features that order either quality/quantity correctly (True) or just quality (False)
 def qualityMetric(standardizedFeatureDf,expNum,folderName,qualitySeparationMetricName,eitherSorted):
     #Using nearest neighbor mutual information metric estimate described here: https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0087357#pone.0087357-Abramowitz1 
     #Default k value in sklearn package is 3 (3rd nearest neighbor); if fewer than 4 concentrations per peptide it should be adjusted to n-1 where n is the number of concentrations per peptide
+    #For some reason, the most independent distributions have the highest mutual information. Needs to be looked into
+    #Also does not handle multiple measurements with the same values well
     if qualitySeparationMetricName == 'mutualInformation':
+        #Grab all peptides in dataframe, use as classes for mutual information method
         peptides  = list(standardizedFeatureDf.index.get_level_values('Peptide'))
         newIndex = pd.MultiIndex.from_tuples(list(standardizedFeatureDf.columns),names=standardizedFeatureDf.columns.names)
         qualitySeparationDf = pd.Series(mutual_info_classif(standardizedFeatureDf.values,peptides),index=newIndex)
+    #Tried using distance metrics to determine quality deconvolution, but they did not work very well. Needs to be revisited
     else:
         distanceMetric = distanceMetricDictionary[qualitySeparationMetricName]
         peptides  = list(standardizedFeatureDf.index.get_level_values('Peptide'))
@@ -69,7 +77,6 @@ def qualityMetric(standardizedFeatureDf,expNum,folderName,qualitySeparationMetri
     
     #Higher ->better separated
     qualitySeparationDf = qualitySeparationDf.to_frame('Quality Separation')
-    print(qualitySeparationDf)
     if eitherSorted:
         with open('kineticFeatureOutput/qualitySeparationMetric-'+folderName+'-'+qualitySeparationMetricName+'-either.pkl','wb') as f:
             pickle.dump(qualitySeparationDf,f)

@@ -5,6 +5,7 @@ import numpy as np
 import pickle,math,sys,re
 from sklearn.preprocessing import MinMaxScaler
 
+#Quality ordering (highest to lowest) of peptide; as new peptides to benchmark we can slot them in
 canonicalQualityOrder = ['N4','Q4','T4','A8','Q7','V4','G4','E1']
 
 #Remove peptides/concentrations that are low enough to not provoke a response from the Tcells
@@ -60,45 +61,57 @@ def checkQuantityOrder(featureDf):
             concentrationValues = list(observableDf.loc[peptide])
             sortedAscendingConcentrationValues = sorted(concentrationValues)
             sortedDescendingConcentrationValues = sorted(concentrationValues)[::-1]
-            #establish direction of sorting with first peptide
-            if peptide == list(pd.unique(observableDf.index.get_level_values('Peptide')))[0]:
-                #Also need to check that direction of concentration order is conserved across all peptides of a given feature
-                #e.g. if an increase in a feature results in an increase in N4 concentration, an increase in the same feature
-                #should not result in a decrease in the T4 concentration
-                if concentrationValues == sortedAscendingConcentrationValues:
-                    ascending = True
-                else:
-                    if concentrationValues == sortedDescendingConcentrationValues:
-                        ascending = False
-                    else:
-                        allOrdered = False
-                        break
+            #Remove features with duplicate quantity values
+            if len(concentrationValues) != len(list(set(concentrationValues))):
+                allOrdered = False
+                break
             else:
-                if ascending:
-                    if concentrationValues != sortedAscendingConcentrationValues:
-                        allOrdered = False
-                        break
+                #establish direction of sorting with first peptide
+                if peptide == list(pd.unique(observableDf.index.get_level_values('Peptide')))[0]:
+                    #Also need to check that direction of concentration order is conserved across all peptides of a given feature
+                    #e.g. if an increase in a feature results in an increase in N4 concentration, an increase in the same feature
+                    #should not result in a decrease in the T4 concentration
+                    if concentrationValues == sortedAscendingConcentrationValues:
+                        ascending = True
+                    else:
+                        if concentrationValues == sortedDescendingConcentrationValues:
+                            ascending = False
+                        else:
+                            allOrdered = False
+                            break
                 else:
-                    if concentrationValues != sortedAscendingConcentrationValues:
-                        allOrdered = False
-                        break
+                    if ascending:
+                        if concentrationValues != sortedAscendingConcentrationValues:
+                            allOrdered = False
+                            break
+                    else:
+                        if concentrationValues != sortedDescendingConcentrationValues:
+                            allOrdered = False
+                            break
         if allOrdered:
             quantityOrderedFeatures.append(i)
             print('Feature '+str(i)+' sorts  quantity correctly')
     return featureDf.iloc[:,quantityOrderedFeatures]
 
+#Removes features that do not preserve peptide quality order correctly
 def checkQualityOrder(featureDf):
     qualityOrderedFeatures = []
-    #peptides = pd.unique(featureDf.index.get_level_values('Peptide'))
+    #Iterate through each feature
     for i in range(featureDf.shape[1]):
         observableDf = featureDf.iloc[:,i]
+        #Construct series out of mean feature value of each peptide in the feature
         peptideValues = observableDf.groupby(['Peptide']).mean()
+        #Sort this series from lowest to highest, then grab the peptides (now in their sorted order)
         sortedPeptideValuesAscending = list(pd.unique(peptideValues.sort_values().index))
+        #Do same thing by sorting highest to lowest
         sortedPeptideValuesDescending = list(pd.unique(peptideValues.sort_values(ascending=False).index))
+        #Construct a list of all peptides in "canonical quality order" list that are in this particular experiment
+        #Will naturally be ordered from highest quality to lowest quality as that is the way they are ordered in the list
         peptideQualities = []
         for peptide in canonicalQualityOrder:
             if peptide in list(pd.unique(observableDf.index.get_level_values('Peptide'))):
                 peptideQualities.append(peptide)
+        #Only use feature if either the ascending or descending peptide value lists match up with the true quality ordering (direction does not matter)
         if peptideQualities == sortedPeptideValuesAscending or peptideQualities == sortedPeptideValuesDescending:
             qualityOrderedFeatures.append(i)
             print('Feature '+str(i)+' sorts quality correctly')
@@ -111,15 +124,19 @@ def preprocessingPipeline(fullFeatureDf,expNum,folderName):
     respondingPeptides = extractPeptidesConcentrationsWithResponse(fullFeatureDf,expNum)
     #Normalize remaining peptides (with min max for now)
     normalizedFeatureDf = normalizeFeatureDataFrame('minmax',respondingPeptides)
-    with open('kineticFeatureOutput/fullFeatureDf-'+folderName+'-preprocessed.pkl','wb') as f:
-        pickle.dump(normalizedFeatureDf,f)
     #Prune features; features that do not correctly sort quality or quantity are thrown out
     correctlyOrderedByQuality = checkQualityOrder(normalizedFeatureDf)
     correctlyOrderedByQuantity = checkQuantityOrder(normalizedFeatureDf)
-    first_list = list(correctlyOrderedByQuality.columns)
-    second_list = list(correctlyOrderedByQuantity.columns)
-    sortsEitherCorrectly = first_list + list(set(second_list) - set(first_list))
+    #Grab all features that order quality
+    qualityOrdered_list = list(correctlyOrderedByQuality.columns)
+    quantityOrdered_list = list(correctlyOrderedByQuantity.columns)
+    #Add with all features that order quantity that do not also order quantity
+    sortsEitherCorrectly = qualityOrdered_list + list(set(quantityOrdered_list) - set(qualityOrdered_list))
+    #This gets all features that correctly order quality or quantity
     correctlyOrderedByEither = normalizedFeatureDf.loc[:,sortsEitherCorrectly]
+    #Save all four dataframes (all (just normalization; no order based pruning), quantity ordered, quality ordered, and quantity or quality ordered)
+    with open('kineticFeatureOutput/fullFeatureDf-'+folderName+'-preprocessed.pkl','wb') as f:
+        pickle.dump(normalizedFeatureDf,f)
     with open('kineticFeatureOutput/fullFeatureDf-'+folderName+'-preprocessed-qualityOrdered.pkl','wb') as f:
         pickle.dump(correctlyOrderedByQuality,f)
     with open('kineticFeatureOutput/fullFeatureDf-'+folderName+'-preprocessed-quantityOrdered.pkl','wb') as f:

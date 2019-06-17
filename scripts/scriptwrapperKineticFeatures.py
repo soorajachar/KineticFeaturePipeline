@@ -19,15 +19,17 @@ from miscFunctions import parseCommandLineNNString
 from preprocessKineticFeatures import preprocessingPipeline 
 #Figure Generation
 sys.path.insert(0, 'figureScripts/')
-from createDeconvolutionMetricPlots import createQualityStripPlot,createQuantityCatPlot,createQualityQuantityPairPlot
+from createDeconvolutionMetricPlots import createQualityStripPlot,createQuantityCatPlot,createQualityQuantityPairPlot,createQualityKDE
 sys.path.insert(0, 'facetPlottingScripts/')
 import facetPlotLibrary as fpl
 
 idx = pd.IndexSlice
 
-#Should also have experiment spreadsheet in this folder
+#Should have experiment spreadsheet in this folder
 pathToExperimentsFolder = '../experimentDataKineticFeatures'
 
+#Subfolders created within experiment folder (inputData for cell/cyt/prolif dataframes, output data for all kinetic feature/mutual info dataframes
+#figures for all generated plots
 inputDataSubfolderName = 'kineticFeatureInput'
 outputDataSubfolderName = 'kineticFeatureOutput'
 figureSubfolderName = 'kineticFeatureFigures'
@@ -53,11 +55,12 @@ def main():
     parser.add_argument("-pd", action='store_true', help = "Process Kinetic Feature FeatureDf.")
     parser.add_argument("-ppd", action='store_true', help = "Process Kinetic Feature FeatureDf.")
     parser.add_argument("-dc", action='store_true', help = "Process Kinetic Feature Deconvolution Metrics.")
-    parser.add_argument("-pp", action='store_true', help = "Plot Pair Plot of kinetic features (used for quality).")
-    parser.add_argument("-cp", action='store_true', help = "Plot Cat Plots of kinetic features (used for quantity).")
+    parser.add_argument("-pp", action='store_true', help = "Plot Pair Plot of kinetic features (used for quality and quantity).")
+    parser.add_argument("-cp", action='store_true', help = "Plot Cat Plots of kinetic features (used for quantity or quantity).")
+    parser.add_argument("-kde", action='store_true', help = "Plot KDE of kinetic features (used for quality).")
     parser.add_argument("-bp", action='store_true', help = "Plot Bar Plot of kinetic features")
     parser.add_argument("-sp", action='store_true', help = "Plot Scatter Plot of kinetic features")
-    parser.add_argument("--input", dest='inputString', help ="Perform action on specified dataset.")
+    parser.add_argument("--input", dest='inputString', help ="Run specified script on these experimental data set(s). Separate numbers with , or - for a range.")
     
     parser.add_argument("-cyt", action='store_true', help = "Process cytokine data type.")
     parser.add_argument("-cell", action='store_true', help = "Process cell data type.")
@@ -69,9 +72,13 @@ def main():
     
     args = parser.parse_args()
 
+    #Allows for multiple datasets to be run at once using , or - with experiment numbers
     experimentsToRun = parseCommandLineNNString(args.inputString)
     excel_data = pd.read_excel(pathToExperimentsFolder+'/masterExperimentSpreadsheet.xlsx')
 
+    #If specific datatype (cell/prolif/cyt) not specified, run script considering all datatypes
+    #Mostly useful to exclude cell, as it has extra levels (celltype and statistic) that are 
+    #not used in the other data types
     if args.all or not (args.cyt or args.cell or args.prolif):
         dataTypeList = slice(None)
         dataTypeString = 'all'
@@ -82,6 +89,7 @@ def main():
             if dataTypeInputs[dataType]:
                 dataTypeList.append(dataType)
         dataTypeString = '_'.join(dataTypeList)
+    #Go through every experiment number passed through --input, grab the experiment name from the spreadsheet, and run script on that experiment
     for expNum in experimentsToRun:
         folderName = excel_data['Full Name'][expNum-1]
         os.chdir(pathToExperimentsFolder)
@@ -91,9 +99,9 @@ def main():
                 #Load in whole kinetic feature dataframe
                 rawFeatureDf = pickle.load(open('kineticFeatureOutput/fullFeatureDf-'+folderName+'-raw.pkl','rb'))
                 if not args.ppd:
-                    #Load in preprocessed dataframes. "Quality Sorted" dataframe only has features that arrange qualities in the correct order
-                    #"Quantity sorted" dataframe only has features that arrange quantity in the correct order, so "either sorted" only has dataframes that
-                    #arrange at least one metric in the correct order
+                    #Load in preprocessed dataframes. "Quality Ordered" dataframe only has features that arrange qualities in the correct order
+                    #"Quantity Ordered" dataframe only has features that arrange quantity in the correct order, so "either ordered" only has dataframes that
+                    #arrange at least one of the two metrics in the correct order. Also excludes features that give the same value for multiple peptides/concentrations
                     qualityOrderedFeatureDf = pickle.load(open('kineticFeatureOutput/fullFeatureDf-'+folderName+'-preprocessed-qualityOrdered.pkl','rb'))
                     quantityOrderedFeatureDf = pickle.load(open('kineticFeatureOutput/fullFeatureDf-'+folderName+'-preprocessed-quantityOrdered.pkl','rb'))
                     eitherOrderedFeatureDf = pickle.load(open('kineticFeatureOutput/fullFeatureDf-'+folderName+'-preprocessed-either.pkl','rb'))
@@ -103,7 +111,7 @@ def main():
         if args.ce:
             createExperimentFolders(folderName)
         #Extract kinetic features from all input dataframes placed in kineticFeatureInput dataframes in experiment folder
-        #Can change number of timepoints used for timeslices with timeSliceScaling parameter (default is that minimum
+        #Can change number of timepoints used for timeslices with "minTimePointScaleFactor" parameter (default is that minimum
         #timeslice length is 25% of total number of timepoints in data)
         elif args.pd:
             minTimePointScaleFactor = 0.25
@@ -116,11 +124,11 @@ def main():
             #Create distance metric (quality) or mutual info metric (quality2) df
             qualityMetric(qualityOrderedFeatureDf,expNum,folderName,qualitySeparationMetricName,False)
             qualityMetric(eitherOrderedFeatureDf,expNum,folderName,qualitySeparationMetricName,True)
-            #Create cv metric (quantity) df 
+            #Create cv metric (quantity) df
             quantityMetric(quantityOrderedFeatureDf,expNum,folderName,quantitySeparationMetricName,False)
             quantityMetric(eitherOrderedFeatureDf,expNum,folderName,quantitySeparationMetricName,True)
         #Figure Generation
-        elif args.pp or args.cp or args.sp or args.bp:
+        elif args.pp or args.cp or args.sp or args.bp or args.kde:
             qualityMetricDf = pickle.load(open('kineticFeatureOutput/qualitySeparationMetric-'+folderName+'-'+qualitySeparationMetricName+'.pkl','rb')).loc[idx[dataTypeList]]
             quantityMetricDf = pickle.load(open('kineticFeatureOutput/quantitySeparationMetric-'+folderName+'-'+quantitySeparationMetricName+'.pkl','rb')).loc[idx[dataTypeList]]
             qualityMetricEitherOrderedDf = pickle.load(open('kineticFeatureOutput/qualitySeparationMetric-'+folderName+'-'+qualitySeparationMetricName+'-either.pkl','rb')).loc[idx[dataTypeList]]
@@ -135,8 +143,11 @@ def main():
                 elif args.quan:
                     createQuantityCatPlot(quantityMetricDf,quantityOrderedFeatureDf,numberOfTopScoring,folderName,dataTypeString)
                 else:
-                    createStripPlot(qualityMetric,qualityOrderedFeatureDf,numberOfTopScoring,folderName,dataTypeString)
-                    createQuantityCatPlot(quantityMetric,quantityOrderedFeatureDf,numberOfTopScoring,folderName,dataTypeString)
+                    createStripPlot(qualityMetricDf,qualityOrderedFeatureDf,numberOfTopScoring,folderName,dataTypeString)
+                    createQuantityCatPlot(quantityMetricDf,quantityOrderedFeatureDf,numberOfTopScoring,folderName,dataTypeString)
+            #KDEs; useful for showing quality deconvolution
+            elif args.kde:
+                createQualityKDE(qualityMetricDf,qualityOrderedFeatureDf,numberOfTopScoring,folderName,dataTypeString)
             elif args.sp or args.bp:
                 if args.sp:
                     subPlotType = 'scatter'

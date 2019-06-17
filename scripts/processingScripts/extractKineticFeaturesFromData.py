@@ -17,16 +17,24 @@ from preprocessKineticFeatures import preprocessingPipeline,returnWellBehavedMar
 
 idx = pd.IndexSlice
 
-#Note: ADD NEW KINETIC FEATURES HERE
+#Note: ADD NEW KINETIC FEATURES HERE; MAKE SURE THEY ONLY REQUIRE THE TIMESLICED DATAFRAME AND THE LIST OF OBSERVABLES AS INPUT PARAMETERS AND ONLY RETURN
+#A DATAFRAME WITH THE KINETIC FEATURE
 kineticFeatureDictionary = {'SlopesYIntercepts':createLinRegDataFrame,'Sums':createSumDataFrame}
 
+#When given a dataframe and a minimum timepoint range, return all possible timeslices (regions of the timeseries) that have at least 
+#minTimepointScaleFactor*totalNumberTimepoints datapoints within them. Helps reduce noise by not calculating kinetic features on very sparse
+#regions of the time kinetics graph
 def returnTimePointEndpoints(df,minTimePointScaleFactor):
+    #Get all timepoints in dataframe
     timepoints = list(df.columns)
+    #Get all combinations of the indices of the timepoints
     timepointEndpoints = list(itertools.combinations(range(len(timepoints)),2))
     timepointRegionList = []
     minTimePointRegionLength = minTimePointScaleFactor*len(timepoints)
     for timepointEndpoint in timepointEndpoints:
+        #Grab all timepoints between a combination of timepoint indices
         timepointRegion = timepoints[timepointEndpoint[0]:timepointEndpoint[1]]
+        #If length of this timepoint region is larger than the minimum, add both the starting and ending timepoints to a list
         if len(timepointRegion) >= minTimePointRegionLength:
             timepointRegionList.append(tuple([timepointRegion[0],timepointRegion[-1]]))
     return timepointRegionList
@@ -34,36 +42,38 @@ def returnTimePointEndpoints(df,minTimePointScaleFactor):
 #Time partitions data by timepoint region for each observable, concatenates into statistic df, returns list of statistic dfs to be made into cellTypeDf
 def returnFeatureDataStatisticList(inputStatisticDf,dataType,minTimePointScaleFactor):
     featureStatisticDfList = []
-    statisticName = 'Statistic'
     statisticList = list(pd.unique(inputStatisticDf.index.get_level_values('Statistic')))
     for statistic in statisticList:
         #Make statistic sliced dataframes (only one dummy statistic for cytokines/proliferation, many statistics (GFI, CV, % Positive etc.) for cells
-        featureStatisticDf = inputStatisticDf.xs([statistic],level=[statisticName])
-        #Use Individual Timepoints
+        featureStatisticDf = inputStatisticDf.xs([statistic],level=['Statistic'])
         if dataType == 'cyt':
             observableName = 'Cytokine'
         elif dataType == 'cell':
             observableName = 'Marker'
         else:
             observableName = 'Metric'
+
+        ###Add individual timepoints of each observable in the datatype as features, primarily to compare their deconvolution against the best kinetic features
+        #(to make the point that we need the time aspect of the data to get good deconvolution)###
+        #Unstack Observable (move observable to columns; columns now have time-observable))
         individualTimepointDfToReindex = featureStatisticDf.unstack(observableName)
+        #Grab a dataframe containing the first observable from the statisticDf
         reindexingDf = featureStatisticDf.xs([list(pd.unique(featureStatisticDf.index.get_level_values(observableName)))[0]],level=[observableName]) 
-        reindexedDf = reindexDataFrame(individualTimepointDfToReindex,reindexingDf,False)
+        #Unstacking automatically sorts the dataframe in lexographic order. We use this method to recover the original ordering of the index
+        individualTimepointDfBeforeNewColumns = reindexDataFrame(individualTimepointDfToReindex,reindexingDf,False)
+        #Make new column index for individualtimepoint df
         newDfList = []
         timeslicelist = []
-        for timepoint in pd.unique(reindexedDf.columns.get_level_values('Time')):
-            currentTimeDf = reindexedDf.loc[:,timepoint]
-            newDfList.append(currentTimeDf)
-            timeslicelist.append([timepoint,timepoint])
-        individualTimepointDf = pd.concat(newDfList,axis=1,keys=pd.unique(reindexedDf.columns.get_level_values('Time')),names=['TimeSliceEnd'])
-        timeslicelist = []
-        for timepoint in pd.unique(reindexedDf.columns.get_level_values('Time')):
-            currentTimeDf = individualTimepointDf.loc[:,timepoint]
-            newDfList.append(currentTimeDf)
+        #Go through each timepoint and observable and construct a list containing the timepoint as the timeslicestart and end, the observable as the observable,
+        #and the feature type as "Individual Observation" (allows for easy subsetting later on)
+        for timepoint in pd.unique(individualTimepointDfBeforeNewColumns.columns.get_level_values('Time')):
+            currentTimeDf = individualTimepointDfBeforeNewColumns.loc[:,timepoint]
             for observable in currentTimeDf:
                 timeslicelist.append([timepoint,timepoint,'IndividualObservation',observable])
+        #Construct new column multindex and dataframe with previously constructed list
         newMultiIndexColumns = pd.MultiIndex.from_tuples(timeslicelist,names=['TimeSliceStart','TimeSliceEnd','FeatureType','Observable'])
-        individualTimepointDf = pd.DataFrame(individualTimepointDf.values,index=individualTimepointDf.index,columns=newMultiIndexColumns)
+        individualTimepointDf = pd.DataFrame(individualTimepointDfBeforeNewColumns.values,index=individualTimepointDfBeforeNewColumns.index,columns=newMultiIndexColumns)
+        
         #Grab all "timepoint regions" possible for the timeseries (5-20 hours, 5-25 hours etc.) and start iterating through them
         timepointRegions = returnTimePointEndpoints(featureStatisticDf,minTimePointScaleFactor)
         timepointRegionDfList = []
@@ -73,9 +83,11 @@ def returnFeatureDataStatisticList(inputStatisticDf,dataType,minTimePointScaleFa
             timeStartIndex = list(featureStatisticDf.columns).index(timeStart)
             timeEndIndex = list(featureStatisticDf.columns).index(timeEnd)
             
+            #Get all observables for this datatype and statistic (doesn't change in cyt/prolif, but does change per statistic in cells)
             observableList = list(pd.unique(featureStatisticDf.index.get_level_values(observableName)))
             #Slice the time kinetics data into specified region
             df = featureStatisticDf.iloc[:,timeStartIndex:timeEndIndex+1]
+            #Start calculating kinetic features from kinetic feature dictionary, and start adding the returned dataframes to a list
             kineticFeatureList = []
             for kineticFeature in kineticFeatureDictionary:
                 kineticFeatureDf = kineticFeatureDictionary[kineticFeature](df,observableList)
@@ -84,9 +96,10 @@ def returnFeatureDataStatisticList(inputStatisticDf,dataType,minTimePointScaleFa
             timepointRegionFeatureDf = pd.concat(kineticFeatureList,axis=1)
             timepointRegionDfList.append(timepointRegionFeatureDf)
             print('\t\t\t'+str(timeStart)+'hrs-'+str(timeEnd)+'hrs done!')
-        #all feature dataframes for all observables in a statistic
+        #all feature dataframes for all observables in a statistic get concatenated into a single dataframe
         featureStatisticMultiIndex = pd.MultiIndex.from_tuples(timepointRegions,names=['TimeSliceStart','TimeSliceEnd'])
         featureStatisticDf = pd.concat(timepointRegionDfList,axis=1,keys=timepointRegions,names=['TimeSliceStart','TimeSliceEnd'])
+        #The kinetic feature values and the invidual timepoint df constructed earlier are joined columnwise to produce the final feature df for the statistic
         featureStatisticDfWithIndividualTimepoints = pd.concat([featureStatisticDf,individualTimepointDf],axis=1)
         featureStatisticDfList.append(featureStatisticDfWithIndividualTimepoints)
         print('\t\t'+str(statistic)+' done!')
@@ -114,6 +127,7 @@ def createFullFeatureDataFrame(expNum,folderName,minTimePointScaleFactor):
     dataTypeList = []
     
     os.chdir('kineticFeatureInput')
+    #Grab all pickle files in kineticFeatureInputFolder, process kinetic features for each datafarme one at a time
     dataList =  glob.glob('*.pkl')
     os.chdir('..')
     for fileName in dataList:
@@ -128,13 +142,16 @@ def createFullFeatureDataFrame(expNum,folderName,minTimePointScaleFactor):
         
         dataTypeDf = pickle.load(open('kineticFeatureInput/'+fileName,'rb'))
         cellTypeDfList = []
+        #Cytokine and proliferation dataframes have essentially the same structure, while
+        #cell dataframes actually use the celltype and statistic columns
         if dataType != 'cell':
             #Only one dummy celltype/statistic for cytokine/proliferation data
             #Cytokine Data
             if dataType == 'cyt':
                 cellTypeList = ['NotApplicable']
                 featureStatisticList = ['CytokineConcentration']
-                dataTypeDf = abs(np.log10(dataTypeDf))
+                #Need to take logarithm of cytokine data for features to work
+                dataTypeDf = np.log10(dataTypeDf)
             #Proliferation Data
             else:
                 cellTypeList = ['TCells']
@@ -152,6 +169,9 @@ def createFullFeatureDataFrame(expNum,folderName,minTimePointScaleFactor):
             cellTypeDf = pd.concat(featureStatisticDfList,axis=1,keys=featureStatisticList,names=['Statistic'])
             cellTypeDfList.append(cellTypeDf)
         else:
+            #Need to swap marker and statistic levels for the dataframe to align with the desired formats
+            #Before flipping, the first three levels in the cell df go cellType-Observable-Statistic, but we want observable
+            #on the outside so we swap levels 1 and 2
             dataTypeDf = dataTypeDf.swaplevel(1,2)
             #Grab all unique cell types from input data and start iterating through them
             cellTypeList = list(pd.unique(dataTypeDf.index.get_level_values('CellType'))) 
@@ -167,13 +187,13 @@ def createFullFeatureDataFrame(expNum,folderName,minTimePointScaleFactor):
                 cellTypeDf = pd.concat(statisticDfList,axis=1,keys=statisticList,names=['Statistic'])
                 cellTypeDfList.append(cellTypeDf)
                 print('\t'+str(cellType)+' done!')
-        #all celltypes into a dataType
+        #all celltype dataframes concatenated into a dataType dataframe
         dataTypeDf = pd.concat(cellTypeDfList,axis=1,keys=cellTypeList,names=['CellType'])
         dataTypeDfList.append(dataTypeDf)
         print(str(dataType)+' done!')
-    #all dataTypes into a full kinetic feature df for the experiment
+    #all dataType dataframes concatenated into a full kinetic feature df for the experiment
     fullFeatureDf = pd.concat(dataTypeDfList,axis=1,keys=dataTypeList,names=['DataType'])
-    #Raw Features
+    #Save Raw Features (will be preprocessed in later script)
     with open('kineticFeatureOutput/fullFeatureDf-'+folderName+'-raw.pkl','wb') as f:
         pickle.dump(fullFeatureDf,f)
     return fullFeatureDf
